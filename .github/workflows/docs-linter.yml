@@ -13,10 +13,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run markdownlint on docs
-        uses: DavidAnson/markdownlint-action@v14
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          config: .markdownlint.json
-          files: |
-            docs/**/*.md
-            README.md
+          node-version: "22"
+
+      - name: Run markdownlint on docs and README
+        run: npx --yes markdownlint-cli2 --config .markdownlint.json "docs/**/*.md" "README.md"
