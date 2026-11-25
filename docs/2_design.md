@@ -3,6 +3,7 @@
 ## 2.1. Контекстне та контейнерне моделювання системи (C4 Model)
 
 ### Діаграма контексту системи (Level 1 - System Context)
+
 Вхідні потоки даних та актори взаємодіють із платформою відповідно до меж, специфікованих у [SRS (Розділ 1: System Context)](./srs.md#1-system-context-контекст-системи).
 
 ```mermaid
@@ -25,7 +26,8 @@ C4Context
     Rel(platform, oauth_provider, "Верифікує криптографічні підписи токенів користувачів", "HTTPS / OIDC")
 ```
 
-#### Технічний опис зв'язків контекстного рівня:
+#### Технічний опис зв'язків контекстного рівня
+
 * **Клієнтські виклики:** Власники авто та інженери звертаються до платформи через зашифровані канали `HTTPS / TLS 1.3` відповідно до вимоги безпеки [SRS-NFR-SEC-02](./srs.md#3-non-functional-requirements-матриця-нефункціональних-вимог).
 * **Телематичний потік:** Апаратні модулі OBD-II транслюють телеметрію по протоколу `HTTPS / REST API` із JSON-корисним навантаженням за контрактом [SRS-FUN-01](./srs.md#2-functional-requirements-функціональні-вимоги).
 * **Зовнішні провайдери:** Інтеграція з `OAuth 2.0 / OIDC` виконується через стандартизовані протоколи автентифікації за вимогою [SRS-NFR-SEC-01](./srs.md#3-non-functional-requirements-матриця-нефункціональних-вимог).
@@ -33,6 +35,7 @@ C4Context
 ---
 
 ### Діаграма контейнерів системи (Level 2 - Container Diagram)
+
 Система розділена на окремі виконувані контейнери для ізоляції високонавантаженого потоку запису телеметрії від обчислювального аналізу даних.
 
 ```mermaid
@@ -76,7 +79,8 @@ C4Container
     Rel(diagnostics_service, crm, "Отримує сервісні регламенти та коди заміни вузлів", "REST / HTTPS")
 ```
 
-#### Технічний опис контейнерів та протоколів:
+#### Технічний опис контейнерів та протоколів
+
 * **API Gateway (Nginx/Traefik):** Периметровий вузол безпеки, що виконує SSL Termination, захист від DDoS через Rate Limiting (100 req/min/IP) та балансування навантаження, забезпечуючи виконання [SRS-NFR-PERF-01](./srs.md#3-non-functional-requirements-матриця-нефункціональних-вимог).
 * **Telemetry Ingestion Service:** Асинхронний сервіс на базі `FastAPI`, призначений для високошвидкісного прийому пакетів телеметрії, валідації `JSON Schema` [SRS-FUN-01](./srs.md#2-functional-requirements-функціональні-вимоги) та паралельного запису в чергу `RabbitMQ`.
 * **Message Broker (RabbitMQ):** Декуплює вхідний потік від обчислювального блоку аналітики за протоколом `AMQP / TCP`, що гарантує відсутність втрати телеметрії при сплесках трафіку.
@@ -134,7 +138,8 @@ C4Component
     Rel(cache_client, redis_cache, "Записує розраховані структури станів", "RESP / TCP")
 ```
 
-#### Технічний опис компонентів та принципів Clean Architecture:
+### Технічний опис компонентів та принципів Clean Architecture
+
 * **Вхідний шар (Inbound Layer):** `JWT & Scope Guard` перевіряє права доступу [SRS-NFR-SEC-01](./srs.md#3-non-functional-requirements-матриця-нефункціональних-вимог) до виклику бізнес-методів. `Telemetry Stream Consumer` вичитує події з черги за допомогою асинхронного клієнта `aio-pika`.
 * **Шар доменної логіки (Domain Core):**
   * `DTO Validation & Normalizer` здійснює відсіювання шумів сенсорів через `Pydantic v2` під контракт [SRS-FUN-01](./srs.md#2-functional-requirements-функціональні-вимоги).
@@ -145,6 +150,7 @@ C4Component
 ---
 
 ## 2.3. Документування архітектурних рішень (Architecture Decision Records)
+
 * [ADR-001: Вибір архітектури сховища даних для часових рядів телеметрії та діагностичних подій](./adr/0001-choice-of-technology.md) — **Status: Approved**.
 
 ---
@@ -215,7 +221,7 @@ erDiagram
     VEHICLES ||--o{ MAINTENANCE_LOGS : logs
 ```
 
-- **Індекси та цілісність:** складені `B-Tree` індекси на `TELEMETRY_RECORDS(vehicle_id, recorded_at DESC)` та `DIAGNOSTIC_PREDICTIONS(vehicle_id, status, created_at DESC)`, часткові індекси за `deleted_at IS NULL`, `GIN` на поля `jsonb` (`sensor_payload`, `model_meta`), унікальний `idempotency_key` для ідемпотентної обробки повідомлень.
+* **Індекси та цілісність:** складені `B-Tree` індекси на `TELEMETRY_RECORDS(vehicle_id, recorded_at DESC)` та `DIAGNOSTIC_PREDICTIONS(vehicle_id, status, created_at DESC)`, часткові індекси за `deleted_at IS NULL`, `GIN` на поля `jsonb` (`sensor_payload`, `model_meta`), унікальний `idempotency_key` для ідемпотентної обробки повідомлень.
 
 ## 2.5. Специфікація міжсервісних контрактів (API)
 
@@ -226,13 +232,14 @@ erDiagram
 ## 2.6. Моделювання логіки критичних вузлів
 
 ### Алгоритм 1. Прийом і перевірка масиву показників телеметрії Samples[i]
+
 1. Вхід: масив `Samples[0..N-1]`, ліміт спроб `MaxRetries := 3`.
 2. Старт: `i := 0`, `ValidCount := 0`, `Status := "PROCESSING"`, `HasError := FALSE`.
 3. Якщо `(Samples = NULL) OR (N <= 0)`: `Status := "FAILED"`, кінець.
 4. Поки `(i < N) AND (HasError = FALSE)`:
-   - Якщо `(Samples[i].RPM < 0) OR (Samples[i].RPM > 10000) OR (Samples[i].CoolantTempC < -50) OR (Samples[i].CoolantTempC > 160)`: `HasError := TRUE`, `Status := "FAILED"`.
-   - Інакше: `Retries := 0`, `Saved := FALSE`; поки `(Retries < MaxRetries) AND (NOT Saved)`: `Retries := Retries + 1`; якщо збережено або дублікат уже є за `IdempotencyKey`: `Saved := TRUE`, `ValidCount := ValidCount + 1`. Якщо `NOT Saved`: `HasError := TRUE`, `Status := "FAILED"`.
-   - `i := i + 1`.
+   * Якщо `(Samples[i].RPM < 0) OR (Samples[i].RPM > 10000) OR (Samples[i].CoolantTempC < -50) OR (Samples[i].CoolantTempC > 160)`: `HasError := TRUE`, `Status := "FAILED"`.
+   * Інакше: `Retries := 0`, `Saved := FALSE`; поки `(Retries < MaxRetries) AND (NOT Saved)`: `Retries := Retries + 1`; якщо збережено або дублікат уже є за `IdempotencyKey`: `Saved := TRUE`, `ValidCount := ValidCount + 1`. Якщо `NOT Saved`: `HasError := TRUE`, `Status := "FAILED"`.
+   * `i := i + 1`.
 5. Якщо `HasError = FALSE`: `Status := "COMPLETED"`. Повернути `Status`, `ValidCount`.
 
 ```mermaid
@@ -263,6 +270,7 @@ graph TD
 ```
 
 ### Алгоритм 2. Підрахунок ризику несправності за масивом ознак Features[j]
+
 1. Вхід: масив ознак `Features[0..M-1]`, поріг ризику `RiskThreshold := 0.75`, ліміт спроб `MaxAttempts := 3`.
 2. Старт: `j := 0`, `Attempt := 0`, `ScoreSum := 0.0`, `ModelReady := FALSE`, `Status := "PROCESSING"`.
 3. Якщо `(Features = NULL) OR (M <= 0)`: `Status := "FAILED"`, кінець.
@@ -294,5 +302,5 @@ graph TD
 
 ## 2.7. Інтеграційний аудит та верифікація цілісності доменів
 
-- Типи ідентифікаторів (`uuid`), часові мітки (`timestamptz` / `date-time`), ключі ідемпотентності (`idempotency_key` / `idempotencyKey`), параметри `rpm` та `coolant_temp_c` / `coolantTempC` і стани `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED` узгоджені між схемою БД, [openapi.yaml](./api/openapi.yaml) та алгоритмами з розділу 2.6.
-- Критичних конфліктів інтеграції або блокерів не виявлено; специфікації готові до реалізації.
+* Типи ідентифікаторів (`uuid`), часові мітки (`timestamptz` / `date-time`), ключі ідемпотентності (`idempotency_key` / `idempotencyKey`), параметри `rpm` та `coolant_temp_c` / `coolantTempC` і стани `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED` узгоджені між схемою БД, [openapi.yaml](./api/openapi.yaml) та алгоритмами з розділу 2.6.
+* Критичних конфліктів інтеграції або блокерів не виявлено; специфікації готові до реалізації.

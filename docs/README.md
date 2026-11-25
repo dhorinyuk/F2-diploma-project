@@ -1,13 +1,17 @@
 ## Навігація архітектурного контуру (Docs-as-Code)
+
 * [Специфікація вимог SRS (ISO/IEC/IEEE 29148)](./srs.md)
 * [Розділ 2: Архітектурне проєктування системи (C4 Model)](./2_design.md)
 * [Реєстр архітектурних рішень (ADR Repository)](./adr/0001-choice-of-technology.md)
 
 ---
+
 ### Посилання на зведений Розділ 1 (Google Docs)
-- [РОЗДІЛИ 1–2 Аналіз предметної області та проєктування архітектури (F2 Diploma Project)](https://docs.google.com/document/d/1nekk-ok565Kr2cWNaLBr-jQFMcVJ65RDU9jRXmlH-QE/edit?usp=sharing)
+
+* [РОЗДІЛИ 1–2 Аналіз предметної області та проєктування архітектури (F2 Diploma Project)](https://docs.google.com/document/d/1nekk-ok565Kr2cWNaLBr-jQFMcVJ65RDU9jRXmlH-QE/edit?usp=sharing)
 
 ### Зведена матриця нефункціональних вимог (NFRs Matrix)
+
 | Категорія | Параметр / Вимога | Технічне значення |
 | :--- | :--- | :--- |
 | **Продуктивність** | Цільовий RPS API | Не менше 500 RPS |
