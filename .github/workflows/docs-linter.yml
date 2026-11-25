@@ -1,0 +1,22 @@
+name: Docs Quality Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [feature/chapter2-architecture]
+
+jobs:
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run markdownlint on docs
+        uses: DavidAnson/markdownlint-action@v14
+        with:
+          config: .markdownlint.json
+          files: |
+            docs/**/*.md
+            README.md
