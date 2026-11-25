@@ -146,3 +146,153 @@ C4Component
 
 ## 2.3. Документування архітектурних рішень (Architecture Decision Records)
 * [ADR-001: Вибір архітектури сховища даних для часових рядів телеметрії та діагностичних подій](./adr/0001-choice-of-technology.md) — **Status: Approved**.
+
+---
+
+## 2.4. Проєктування та моделювання баз даних
+
+Схема зберігання даних узгоджена з [ADR-001](./adr/0001-choice-of-technology.md) та вимогами [SRS](./srs.md) для сховища `PostgreSQL + TimescaleDB`[cite: 3, 4, 5].
+
+```mermaid
+erDiagram
+    USERS {
+        uuid id PK
+        varchar email UK
+        varchar password_hash
+        varchar role
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at
+    }
+    VEHICLES {
+        uuid id PK
+        uuid user_id FK
+        varchar vin UK
+        varchar make
+        varchar model
+        smallint year
+        int mileage_km
+        int version
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at
+    }
+    TELEMETRY_RECORDS {
+        uuid id PK
+        uuid vehicle_id FK
+        varchar idempotency_key UK
+        varchar dtc_code
+        numeric rpm
+        numeric coolant_temp_c
+        jsonb sensor_payload
+        timestamptz recorded_at
+        timestamptz created_at
+    }
+    DIAGNOSTIC_PREDICTIONS {
+        uuid id PK
+        uuid vehicle_id FK
+        uuid telemetry_id FK
+        varchar status
+        numeric anomaly_score
+        numeric failure_risk_score
+        jsonb model_meta
+        timestamptz created_at
+    }
+    MAINTENANCE_LOGS {
+        uuid id PK
+        uuid vehicle_id FK
+        varchar service_type
+        int odometer_km
+        bigint cost_minor
+        char currency_code
+        timestamptz performed_at
+        timestamptz created_at
+    }
+    USERS ||--o{ VEHICLES : owns
+    VEHICLES ||--o{ TELEMETRY_RECORDS : emits
+    VEHICLES ||--o{ DIAGNOSTIC_PREDICTIONS : has
+    TELEMETRY_RECORDS ||--o{ DIAGNOSTIC_PREDICTIONS : triggers
+    VEHICLES ||--o{ MAINTENANCE_LOGS : logs
+```
+
+- **Індекси та цілісність:** складені `B-Tree` індекси на `TELEMETRY_RECORDS(vehicle_id, recorded_at DESC)` та `DIAGNOSTIC_PREDICTIONS(vehicle_id, status, created_at DESC)`, часткові індекси за `deleted_at IS NULL`, `GIN` на поля `jsonb` (`sensor_payload`, `model_meta`), унікальний `idempotency_key` для ідемпотентної обробки повідомлень.
+
+## 2.5. Специфікація міжсервісних контрактів (API)
+
+Контракт регламентує взаємодію клієнта / OBD-II пристрою через `API Gateway` (`Nginx`) та `API Service` (`FastAPI`) із `Telemetry Ingestion Service` і `Diagnostics & Failure Prediction Engine` (див. [2_design.md](./2_design.md), [SRS](./srs.md) та [ADR-001](./adr/0001-choice-of-technology.md))[cite: 3, 4, 5].
+
+Деталізовану специфікацію ендпоінтів у форматі OpenAPI 3.0 зафіксовано у файлі [openapi.yaml](./api/openapi.yaml).
+
+## 2.6. Моделювання логіки критичних вузлів
+
+### Алгоритм 1. Прийом і перевірка масиву показників телеметрії Samples[i]
+1. Вхід: масив `Samples[0..N-1]`, ліміт спроб `MaxRetries := 3`.
+2. Старт: `i := 0`, `ValidCount := 0`, `Status := "PROCESSING"`, `HasError := FALSE`.
+3. Якщо `(Samples = NULL) OR (N <= 0)`: `Status := "FAILED"`, кінець.
+4. Поки `(i < N) AND (HasError = FALSE)`:
+   - Якщо `(Samples[i].RPM < 0) OR (Samples[i].RPM > 10000) OR (Samples[i].CoolantTempC < -50) OR (Samples[i].CoolantTempC > 160)`: `HasError := TRUE`, `Status := "FAILED"`.
+   - Інакше: `Retries := 0`, `Saved := FALSE`; поки `(Retries < MaxRetries) AND (NOT Saved)`: `Retries := Retries + 1`; якщо збережено або дублікат уже є за `IdempotencyKey`: `Saved := TRUE`, `ValidCount := ValidCount + 1`. Якщо `NOT Saved`: `HasError := TRUE`, `Status := "FAILED"`.
+   - `i := i + 1`.
+5. Якщо `HasError = FALSE`: `Status := "COMPLETED"`. Повернути `Status`, `ValidCount`.
+
+```mermaid
+graph TD
+    A(["Початок"]) --> B["i := 0, ValidCount := 0, Status := PROCESSING, HasError := FALSE"]
+    B --> C{"(Samples = NULL) OR (N <= 0)?"}
+    C -- "ТАК" --> D["Status := FAILED"]
+    D --> Z(["Кінець"])
+    C -- "НІ" --> E{"(i < N) AND (HasError = FALSE)?"}
+    E -- "НІ" --> F{"HasError = FALSE?"}
+    F -- "ТАК" --> G["Status := COMPLETED"]
+    F -- "НІ" --> D
+    G --> Z
+    E -- "ТАК" --> H{"(Samples[i].RPM < 0) OR (Samples[i].RPM > 10000) OR (Samples[i].CoolantTempC < -50) OR (Samples[i].CoolantTempC > 160)?"}
+    H -- "ТАК" --> I["HasError := TRUE, Status := FAILED"]
+    I --> J["i := i + 1"]
+    J --> E
+    H -- "НІ" --> K["Retries := 0, Saved := FALSE"]
+    K --> L{"(Retries < MaxRetries) AND (NOT Saved)?"}
+    L -- "ТАК" --> M["Retries := Retries + 1"]
+    M --> N{"SavedOrDuplicateOK?"}
+    N -- "ТАК" --> O["Saved := TRUE, ValidCount := ValidCount + 1"]
+    O --> L
+    N -- "НІ" --> L
+    L -- "НІ" --> P{"Saved = FALSE?"}
+    P -- "ТАК" --> I
+    P -- "НІ" --> J
+```
+
+### Алгоритм 2. Підрахунок ризику несправності за масивом ознак Features[j]
+1. Вхід: масив ознак `Features[0..M-1]`, поріг ризику `RiskThreshold := 0.75`, ліміт спроб `MaxAttempts := 3`.
+2. Старт: `j := 0`, `Attempt := 0`, `ScoreSum := 0.0`, `ModelReady := FALSE`, `Status := "PROCESSING"`.
+3. Якщо `(Features = NULL) OR (M <= 0)`: `Status := "FAILED"`, кінець.
+4. Поки `(Attempt < MaxAttempts) AND (NOT ModelReady)`: `Attempt := Attempt + 1`; якщо сервіс аналітики доступний: `ModelReady := TRUE`.
+5. Якщо `ModelReady = FALSE`: `Status := "FAILED"`, кінець.
+6. Поки `j < M`: `ScoreSum := ScoreSum + Features[j].Weight * Features[j].NormalizedValue`; `j := j + 1`.
+7. `RiskScore := ScoreSum / M`; якщо `RiskScore >= RiskThreshold`: `AlertRequired := TRUE`, інакше `AlertRequired := FALSE`; `Status := "COMPLETED"`. Повернути `Status`, `RiskScore`, `AlertRequired`.
+
+```mermaid
+graph TD
+    M1(["Початок"]) --> M2["j := 0, Attempt := 0, ScoreSum := 0.0, ModelReady := FALSE, Status := PROCESSING"]
+    M2 --> M3{"(Features = NULL) OR (M <= 0)?"}
+    M3 -- "ТАК" --> M4["Status := FAILED"]
+    M4 --> M13(["Кінець"])
+    M3 -- "НІ" --> M5{"(Attempt < MaxAttempts) AND (NOT ModelReady)?"}
+    M5 -- "ТАК" --> M6["Attempt := Attempt + 1"]
+    M6 --> M7{"ModelServiceOK = TRUE?"}
+    M7 -- "ТАК" --> M8["ModelReady := TRUE"]
+    M8 --> M5
+    M7 -- "НІ" --> M5
+    M5 -- "НІ" --> M9{"ModelReady = FALSE?"}
+    M9 -- "ТАК" --> M4
+    M9 -- "НІ" --> M10{"j < M?"}
+    M10 -- "ТАК" --> M11["ScoreSum := ScoreSum + Features[j].Weight * Features[j].NormalizedValue, j := j + 1"]
+    M11 --> M10
+    M10 -- "НІ" --> M12["RiskScore := ScoreSum / M, Status := COMPLETED"]
+    M12 --> M13
+```
+
+## 2.7. Інтеграційний аудит та верифікація цілісності доменів
+
+- Типи ідентифікаторів (`uuid`), часові мітки (`timestamptz` / `date-time`), ключі ідемпотентності (`idempotency_key` / `idempotencyKey`), параметри `rpm` та `coolant_temp_c` / `coolantTempC` і стани `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED` узгоджені між схемою БД, [openapi.yaml](./api/openapi.yaml) та алгоритмами з розділу 2.6.
+- Критичних конфліктів інтеграції або блокерів не виявлено; специфікації готові до реалізації.
