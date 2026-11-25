@@ -1,0 +1,195 @@
+openapi: 3.0.3
+info:
+  title: Vehicle Telemetry & Diagnostics API
+  version: 1.0.0
+  description: Контракт прийому телеметрії та отримання результатів діагностики/прогнозів автомобіля.
+servers:
+  - url: https://api.vehicle-platform.local/v1
+    description: API Gateway / Backend v1
+security:
+  - bearerAuth: []
+paths:
+  /vehicles/{vehicleId}/telemetry:
+    post:
+      summary: Прийняти пакет телеметричних і діагностичних даних автомобіля
+      operationId: ingestVehicleTelemetry
+      parameters:
+        - name: vehicleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TelemetryIngestRequest'
+      responses:
+        '202':
+          description: Телеметрію прийнято до асинхронної обробки в RabbitMQ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TelemetryIngestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /vehicles/{vehicleId}/diagnostics/latest:
+    get:
+      summary: Отримати останні результати діагностики, аномалій та прогнозу несправностей
+      operationId: getLatestVehicleDiagnostics
+      parameters:
+        - name: vehicleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Актуальний звіт діагностики та прогнозу
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticReportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    TelemetryIngestRequest:
+      type: object
+      required: [idempotencyKey, recordedAt, rpm, coolantTempC]
+      properties:
+        idempotencyKey:
+          type: string
+          minLength: 8
+          maxLength: 128
+          example: 'tel-550e8400-e29b-41d4-a716-446655440000'
+        recordedAt:
+          type: string
+          format: date-time
+          example: '2026-11-25T15:30:00Z'
+        dtcCode:
+          type: string
+          nullable: true
+          pattern: '^[PBUC][0-9]{4}$'
+          example: 'P0299'
+        rpm:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 10000
+          example: 2450.0
+        coolantTempC:
+          type: number
+          format: double
+          minimum: -50
+          maximum: 160
+          example: 92.5
+    TelemetryIngestResponse:
+      type: object
+      required: [telemetryId, vehicleId, status, queuedAt]
+      properties:
+        telemetryId:
+          type: string
+          format: uuid
+        vehicleId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [QUEUED, DUPLICATE, COMPLETED, FAILED]
+        queuedAt:
+          type: string
+          format: date-time
+    DiagnosticReportResponse:
+      type: object
+      required: [predictionId, vehicleId, status, anomalyScore, failureRiskScore, createdAt]
+      properties:
+        predictionId:
+          type: string
+          format: uuid
+        vehicleId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, COMPLETED, FAILED]
+        anomalyScore:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        failureRiskScore:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        createdAt:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required: [errorCode, message]
+      properties:
+        errorCode:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
+  responses:
+    BadRequestError:
+      description: Некоректні вхідні параметри або формат даних
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnauthorizedError:
+      description: Невалідний або відсутній JWT Bearer токен
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFoundError:
+      description: Автомобіль або діагностичний запис не знайдено
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequestsError:
+      description: Перевищено частоту запитів (Rate Limit)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Внутрішня помилка сервісу
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
